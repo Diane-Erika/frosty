@@ -16,7 +16,7 @@ interface Surface {
   cellCount: number
   heights: Float32Array // snow height in each cell
   visible: Uint8Array   // 1 = cell can hold snow, 0 = covered by another window (Step 9)
-  maxHeight: number     // snow stops piling up past this height
+  maxHeight: Float32Array     // snow stops piling up past this height
   spillLeft: number     // snow sliding off the left edge (Step 8)
   spillRight: number    // snow sliding off the right edge (Step 8)
 }
@@ -44,6 +44,18 @@ const MAX_PARTICLES = 6000   // safety limit so the app never slows to a crawl
 
 function randomBetween(min: number, max: number): number {
   return min + Math.random() * (max - min)
+}
+
+// A different height limit for each strip, rising and falling in gentle waves
+function makeWavyLimits(cellCount: number, maxHeight: number): Float32Array {
+  const limits = new Float32Array(cellCount)
+  const phaseA = randomBetween(0, Math.PI * 2) // random start, so every window looks different
+  const phaseB = randomBetween(0, Math.PI * 2)
+  for (let cell = 0; cell < cellCount; cell++) {
+    const wave = Math.sin(cell * 0.06 + phaseA) * 0.6 + Math.sin(cell * 0.17 + phaseB) * 0.4 // -1 to 1
+    limits[cell] = maxHeight * (0.7 + 0.3 * wave) // between 40% and 100% of maxHeight
+  }
+  return limits
 }
 
 export class SnowWorld {
@@ -177,7 +189,7 @@ export class SnowWorld {
     const barY = scene.bar ? scene.bar.y : this.height
 
     if (scene.bar) {
-      this.updateSurface('bar', scene.bar.x1, scene.bar.x2, scene.bar.y, 46)
+      this.updateSurface('bar', scene.bar.x1, scene.bar.x2, scene.bar.y, 24)
       activeIds.add('bar')
     }
 
@@ -187,7 +199,7 @@ export class SnowWorld {
       const tooNarrow = win.w < 60
       if (tooLow || aboveScreen || tooNarrow) continue
       const id = 'w' + win.id
-      this.updateSurface(id, win.x, win.x + win.w, win.y, 26)
+      this.updateSurface(id, win.x, win.x + win.w, win.y, 14)
       activeIds.add(id)
     }
 
@@ -215,7 +227,7 @@ export class SnowWorld {
       surface = {
         id, x1: left, y: lineY, cellCount, heights,
         visible: new Uint8Array(cellCount).fill(1),
-        maxHeight, spillLeft: 0, spillRight: 0
+        maxHeight: makeWavyLimits(cellCount, maxHeight), spillLeft: 0, spillRight: 0
       }
       this.surfaces.set(id, surface)
     }
@@ -255,7 +267,7 @@ export class SnowWorld {
   // Add snow to a cell, with a little going to each neighbour
   private deposit(surface: Surface, cell: number, mass: number): void {
     const heights = surface.heights
-    if (heights[cell] >= surface.maxHeight) return // full: the snow is lost
+    if (heights[cell] >= surface.maxHeight[cell]) return // full: the snow is lost
     heights[cell] += 0.6 * mass
     for (const neighbour of [cell - 1, cell + 1]) {
       const usable = neighbour >= 0 && neighbour < surface.cellCount && surface.visible[neighbour]
