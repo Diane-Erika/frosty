@@ -56,6 +56,7 @@ interface Ball {
   restingOnBall: Ball | null // the ball this one sits on, if any
   carryX: number             // how far a moving window carried it this frame
   carryY: number
+  dead: boolean // burst this frame, about to be removed
 }
 
 interface PointerSample {
@@ -64,12 +65,23 @@ interface PointerSample {
   time: number // milliseconds
 }
 
+interface Dust {
+  x: number
+  y: number
+  velocityX: number
+  velocityY: number
+  age: number    // seconds since it appeared
+  life: number   // seconds until it's gone
+  radius: number
+}
+
 
 const CELL = 3 // width of one snow column, in pixels
 const GRAVITY = 1600         // pixels per second², pulling things down
 const PARTICLE_MASS = 1.4    // how much snow one loose particle carries
 const MAX_PARTICLES = 6000   // safety limit so the app never slows to a crawl
 const MAX_BALL_RADIUS = 72
+const BREAK_SPEED = 520 // impact speed (px/s) that bursts a thrown ball
 
 function randomBetween(min: number, max: number): number {
   return min + Math.random() * (max - min)
@@ -116,6 +128,8 @@ export class SnowWorld {
   private pointerY = 0
   private pointerSamples: PointerSample[] = [] // recent mouse positions, for throwing
 
+  private dust: Dust[] = []
+  
   constructor(canvas: HTMLCanvasElement, options: { rate?: number } = {}) {
     this.canvas = canvas
     const context = canvas.getContext('2d')
@@ -165,6 +179,7 @@ export class SnowWorld {
     this.particles = []
     this.balls = []
     this.heldBall = null
+    this.dust = [] 
     for (const surface of this.surfaces.values()) {
       surface.spillLeft = 0
       surface.spillRight = 0
@@ -182,6 +197,7 @@ export class SnowWorld {
     this.carryStacks()
     this.updateFlakes(deltaTime)
     this.updateParticles(deltaTime)
+    this.updateDust(deltaTime)
 
     for (const surface of this.surfaces.values()) this.relax(surface)
     
@@ -591,40 +607,6 @@ export class SnowWorld {
     }
   }
 
-
-  private draw(): void {
-    const context = this.context
-    context.setTransform(this.pixelRatio, 0, 0, this.pixelRatio, 0, 0)
-    context.clearRect(0, 0, this.width, this.height)
-
-    for (const surface of this.surfaces.values()) this.drawSurface(surface)
-
-    const supporters = new Set<Ball>() // balls that have another ball on top
-    for (const ball of this.balls) {
-      if (ball.restingOnBall) supporters.add(ball.restingOnBall)
-    }
-    const heads = new Set<Ball>()
-    const bodies = new Set<Ball>()
-    for (const ball of this.balls) {
-      const isTopOfStack = ball.restingOnBall && !supporters.has(ball)
-      if (isTopOfStack) {
-        heads.add(ball)
-        bodies.add(ball.restingOnBall!)
-      }
-    }
-
-    for (const body of bodies) this.drawArms(body) // arms first, so they appear behind the ball
-    for (const ball of this.balls) {
-      this.drawBall(ball)
-      if (heads.has(ball)) this.drawFace(ball)
-      if (bodies.has(ball)) this.drawButtons(ball)
-    }
-  
-    this.drawSnowDots(this.flakes)
-    this.drawSnowDots(this.particles)
-  }
-
-
   // snow ball 
 
     isHolding(): boolean {
@@ -757,6 +739,8 @@ export class SnowWorld {
 
     private updateBalls(stepTime: number): void {
     for (const ball of this.balls) {
+      if (ball.dead) continue
+
       ball.previousX = ball.x
       ball.previousY = ball.y
 
@@ -787,6 +771,8 @@ export class SnowWorld {
       if (ball.thrown && slow && ball.restingOn) ball.thrown = false
       if (ball.thrown && slow && (ball.restingOn || ball.restingOnBall)) ball.thrown = false
     }
+    
+    this.balls = this.balls.filter((ball) => !ball.dead && ball.y < this.height + 300)
   }
 
   private collideWithSurfaces(ball: Ball, stepTime: number): void {
@@ -817,7 +803,11 @@ export class SnowWorld {
       } else {
         ball.velocityY = impact > 150 ? -impact * 0.15 : 0 // small bounce, or settle
         ball.velocityX *= Math.max(0, 1 - stepTime * 4)    // rolling friction
-        // Step 12: a hard enough thrown impact will burst the ball here
+        
+        if (ball.thrown && impact > BREAK_SPEED) {
+          this.shatter(ball)
+          return
+        }
       }
       ball.restingOn = surface.id
 
@@ -851,6 +841,12 @@ export class SnowWorld {
       if (isHeld) {
         ball.velocityY = Math.min(ball.velocityY, 0)
       } else {
+
+          if (ball.thrown && impact > BREAK_SPEED) {
+            this.shatter(ball)
+            return
+          }
+
         ball.velocityY = impact > 150 ? -impact * 0.15 : 0
         ball.velocityX *= Math.max(0, 1 - stepTime * 4)
       }
@@ -860,10 +856,18 @@ export class SnowWorld {
 
     // Left and right sides: bounce back softly
     if (ball.x - ball.radius < 0) {
+      if (ball.thrown && -ball.velocityX > BREAK_SPEED) {
+        this.shatter(ball)
+        return
+      }
       ball.x = ball.radius
       if (ball.velocityX < 0) ball.velocityX = -ball.velocityX * 0.3
     }
     if (ball.x + ball.radius > this.width) {
+       if (ball.thrown && ball.velocityX > BREAK_SPEED) {
+        this.shatter(ball)
+        return
+      }
       ball.x = this.width - ball.radius
       if (ball.velocityX > 0) ball.velocityX = -ball.velocityX * 0.3
     }
@@ -914,55 +918,73 @@ export class SnowWorld {
     }
   }
 
-    private solveBallContacts(): void {
+     private solveBallContacts(): void {
     const bottomFirst = [...this.balls].sort((first, second) => second.y - first.y)
-    for (let round = 0; round < 3; round++) { // 3 rounds, so stacks of 3+ settle properly
+    for (let round = 0; round < 3; round++) {
       for (let lowerIndex = 0; lowerIndex < bottomFirst.length; lowerIndex++) {
         for (let upperIndex = lowerIndex + 1; upperIndex < bottomFirst.length; upperIndex++) {
-          this.solveContact(bottomFirst[lowerIndex], bottomFirst[upperIndex])
+          this.solveContact(bottomFirst[lowerIndex], bottomFirst[upperIndex], round === 0)
         }
       }
     }
   }
 
-  private solveContact(first: Ball, second: Ball): void {
+  private solveContact(first: Ball, second: Ball, checkBreak: boolean): void {
+    if (first.dead || second.dead) return
     const bottom = first.y >= second.y ? first : second
     const top = bottom === first ? second : first
     const offsetX = top.x - bottom.x
-    const offsetY = top.y - bottom.y // negative when top is above bottom
+    const offsetY = top.y - bottom.y
     const touchDistance = top.radius + bottom.radius
     const distance = Math.hypot(offsetX, offsetY)
-    if (distance >= touchDistance || distance === 0) return // not touching
+    if (distance >= touchDistance || distance === 0) return
 
     const topHeld = top === this.heldBall
+    const normalX = offsetX / distance
+    const normalY = offsetY / distance
+    const approachSpeed =
+      (top.velocityX - bottom.velocityX) * normalX + (top.velocityY - bottom.velocityY) * normalY
 
-    // 1. Stacking: the top ball is mostly above the bottom one
+    // 0. Hard hit by a thrown ball? Burst.
+    if (checkBreak && -approachSpeed > BREAK_SPEED && (top.thrown || bottom.thrown)) {
+      if (-approachSpeed > 1.8 * BREAK_SPEED) {
+        // Very hard: both burst (except one you're holding)
+        if (top !== this.heldBall) this.shatter(top)
+        if (bottom !== this.heldBall) this.shatter(bottom)
+      } else {
+        // Otherwise only the thrown one (or the faster one, if both were thrown)
+        const topSpeed = Math.hypot(top.velocityX, top.velocityY)
+        const bottomSpeed = Math.hypot(bottom.velocityX, bottom.velocityY)
+        let target: Ball
+        if (top.thrown && !bottom.thrown) target = top
+        else if (bottom.thrown && !top.thrown) target = bottom
+        else target = topSpeed >= bottomSpeed ? top : bottom
+        if (target !== this.heldBall) this.shatter(target)
+      }
+      return
+    }
+
+    // 1. Stacking
     if (-offsetY > 0.6 * touchDistance) {
-      top.y = bottom.y - Math.sqrt(touchDistance ** 2 - offsetX ** 2) // sit exactly on its surface
+      top.y = bottom.y - Math.sqrt(touchDistance ** 2 - offsetX ** 2)
       if (!topHeld) {
         top.velocityY = Math.min(top.velocityY, bottom.velocityY)
-        top.velocityX = bottom.velocityX + (top.velocityX - bottom.velocityX) * 0.6 // sticky snow
+        top.velocityX = bottom.velocityX + (top.velocityX - bottom.velocityX) * 0.6
         top.restingOnBall = bottom
       }
       return
     }
 
-    // 2. Side contact: push apart, then bounce
-    const normalX = offsetX / distance // direction from bottom to top, length 1
-    const normalY = offsetY / distance
+    // 2. Side contact
     const massBottom = bottom === this.heldBall ? 1e9 : bottom.radius ** 2
     const massTop = topHeld ? 1e9 : top.radius ** 2
     const totalMass = massBottom + massTop
     const overlap = touchDistance - distance
-
-    bottom.x -= normalX * overlap * (massTop / totalMass) // the lighter ball moves more
+    bottom.x -= normalX * overlap * (massTop / totalMass)
     bottom.y -= normalY * overlap * (massTop / totalMass)
     top.x += normalX * overlap * (massBottom / totalMass)
     top.y += normalY * overlap * (massBottom / totalMass)
-
-    const approachSpeed =
-      (top.velocityX - bottom.velocityX) * normalX + (top.velocityY - bottom.velocityY) * normalY
-    if (approachSpeed < 0) { // moving toward each other
+    if (approachSpeed < 0) {
       const impulse = (-approachSpeed * 1.05) / (1 / massBottom + 1 / massTop)
       bottom.velocityX -= (impulse / massBottom) * normalX
       bottom.velocityY -= (impulse / massBottom) * normalY
@@ -1039,5 +1061,106 @@ export class SnowWorld {
       context.stroke()
     }
     context.lineCap = 'butt' // reset, so other drawing isn't affected
+  }
+
+    private shatter(ball: Ball): void {
+    if (ball.dead) return
+    ball.dead = true
+    if (ball === this.heldBall) this.heldBall = null
+
+    // Snow particles: the ball's snow, split into pieces
+    const totalMass = ((Math.PI * ball.radius ** 2) / CELL) * 0.9
+    const count = Math.min(90, Math.max(8, Math.round(totalMass / 3)))
+    const massEach = totalMass / count
+    for (let piece = 0; piece < count; piece++) {
+      const angle = randomBetween(0, Math.PI * 2)
+      const distanceFromCenter = Math.sqrt(Math.random()) * ball.radius
+      const burstSpeed = randomBetween(60, 340)
+      this.addParticle(
+        ball.x + Math.cos(angle) * distanceFromCenter,
+        ball.y + Math.sin(angle) * distanceFromCenter,
+        ball.velocityX * 0.2 + Math.cos(angle) * burstSpeed,
+        ball.velocityY * 0.1 + Math.sin(angle) * burstSpeed - 120, // extra upward pop
+        massEach,
+        0.9 + Math.sqrt(massEach) * 0.55
+      )
+    }
+
+    // Dust puff: just for looks
+    const puffCount = Math.min(40, 10 + ball.radius)
+    for (let puff = 0; puff < puffCount; puff++) {
+      const angle = randomBetween(0, Math.PI * 2)
+      const speed = randomBetween(20, 160)
+      this.dust.push({
+        x: ball.x + Math.cos(angle) * ball.radius * 0.6,
+        y: ball.y + Math.sin(angle) * ball.radius * 0.6,
+        velocityX: Math.cos(angle) * speed,
+        velocityY: Math.sin(angle) * speed - 40,
+        age: 0,
+        life: randomBetween(0.35, 0.8),
+        radius: randomBetween(2, 3 + ball.radius * 0.12)
+      })
+    }
+  }
+
+  private updateDust(deltaTime: number): void {
+    for (let index = this.dust.length - 1; index >= 0; index--) {
+      const puff = this.dust[index]
+      puff.age += deltaTime
+      if (puff.age >= puff.life) {
+        this.dust.splice(index, 1)
+        continue
+      }
+      puff.velocityX *= 1 - 3 * deltaTime                        // slows down quickly
+      puff.velocityY = puff.velocityY * (1 - 3 * deltaTime) + 60 * deltaTime // and drifts down gently
+      puff.x += puff.velocityX * deltaTime
+      puff.y += puff.velocityY * deltaTime
+    }
+  }
+
+  private drawDust(): void {
+    const context = this.context
+    context.fillStyle = '#ffffff'
+    for (const puff of this.dust) {
+      context.globalAlpha = 0.75 * (1 - puff.age / puff.life) // fades out
+      context.beginPath()
+      context.arc(puff.x, puff.y, puff.radius * (1 + 1.5 * puff.age), 0, Math.PI * 2) // grows
+      context.fill()
+    }
+    context.globalAlpha = 1 // reset, so other drawing isn't see-through
+  }
+
+
+   private draw(): void {
+    const context = this.context
+    context.setTransform(this.pixelRatio, 0, 0, this.pixelRatio, 0, 0)
+    context.clearRect(0, 0, this.width, this.height)
+
+    for (const surface of this.surfaces.values()) this.drawSurface(surface)
+
+    const supporters = new Set<Ball>() // balls that have another ball on top
+    for (const ball of this.balls) {
+      if (ball.restingOnBall) supporters.add(ball.restingOnBall)
+    }
+    const heads = new Set<Ball>()
+    const bodies = new Set<Ball>()
+    for (const ball of this.balls) {
+      const isTopOfStack = ball.restingOnBall && !supporters.has(ball)
+      if (isTopOfStack) {
+        heads.add(ball)
+        bodies.add(ball.restingOnBall!)
+      }
+    }
+
+    for (const body of bodies) this.drawArms(body) // arms first, so they appear behind the ball
+    for (const ball of this.balls) {
+      this.drawBall(ball)
+      if (heads.has(ball)) this.drawFace(ball)
+      if (bodies.has(ball)) this.drawButtons(ball)
+    }
+
+    this.drawSnowDots(this.flakes)
+    this.drawSnowDots(this.particles)
+    this.drawDust()
   }
 }
