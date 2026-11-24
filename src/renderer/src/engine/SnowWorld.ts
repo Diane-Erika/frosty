@@ -134,7 +134,7 @@ export class SnowWorld {
 
     private step(deltaTime: number): void {
     this.time += deltaTime
-    this.applyScene()
+    this.applyScene(deltaTime)
     this.updateFlakes(deltaTime)
     this.updateParticles(deltaTime)
 
@@ -182,30 +182,43 @@ export class SnowWorld {
     }
   }
 
-    private applyScene(): void {
+      private applyScene(deltaTime: number): void {
     const scene = this.scene
     if (!scene) return
     const activeIds = new Set<string>()
     const barY = scene.bar ? scene.bar.y : this.height
 
     if (scene.bar) {
-      this.updateSurface('bar', scene.bar.x1, scene.bar.x2, scene.bar.y, 24)
+      this.updateSurface('bar', scene.bar.x1, scene.bar.x2, scene.bar.y, 24, deltaTime)
       activeIds.add('bar')
     }
 
-    for (const win of scene.windows) {
-      const tooLow = win.y >= barY - 6     // top edge is behind the taskbar
-      const aboveScreen = win.y < -5       // e.g. maximized windows
+    for (let windowIndex = 0; windowIndex < scene.windows.length; windowIndex++) {
+      const win = scene.windows[windowIndex]
+      const tooLow = win.y >= barY - 6
+      const aboveScreen = win.y < -5
       const tooNarrow = win.w < 60
       if (tooLow || aboveScreen || tooNarrow) continue
+
       const id = 'w' + win.id
-      this.updateSurface(id, win.x, win.x + win.w, win.y, 14)
+      const surface = this.updateSurface(id, win.x, win.x + win.w, win.y, 14, deltaTime)
       activeIds.add(id)
+
+      // Windows earlier in the list are in front of this one
+      const coveredRanges: [number, number][] = []
+      for (let frontIndex = 0; frontIndex < windowIndex; frontIndex++) {
+        const front = scene.windows[frontIndex]
+        const coversTopEdge = front.y < win.y + 2 && front.y + front.h > win.y - 6
+        if (coversTopEdge) coveredRanges.push([front.x, front.x + front.w])
+      }
+      this.applyCovering(surface, coveredRanges)
     }
 
-    // Windows that closed: remove their surface (Step 9 will drop their snow instead)
-    for (const id of this.surfaces.keys()) {
-      if (!activeIds.has(id)) this.surfaces.delete(id)
+    // Closed or minimized windows: drop all their snow, then remove the surface
+    for (const [id, surface] of this.surfaces) {
+      if (activeIds.has(id)) continue
+      this.shedFraction(surface, 1, 0, 0, 3)
+      this.surfaces.delete(id)
     }
 
     if (!this.seeded && this.surfaces.size > 0) {
@@ -214,26 +227,58 @@ export class SnowWorld {
     }
   }
 
-  private updateSurface(id: string, left: number, right: number, lineY: number, maxHeight: number): void {
+    private updateSurface(id: string, left: number, right: number, lineY: number,
+                        maxHeight: number, deltaTime: number): Surface {
     const cellCount = Math.max(1, Math.round((right - left) / CELL))
     let surface = this.surfaces.get(id)
 
-    if (!surface || surface.cellCount !== cellCount) {
-      const heights = new Float32Array(cellCount)
-      if (surface) {
-        // Window was resized: keep the snow that still fits
-        heights.set(surface.heights.subarray(0, Math.min(cellCount, surface.cellCount)))
-      }
+    // New window: create an empty surface right where it is
+    if (!surface) {
       surface = {
-        id, x1: left, y: lineY, cellCount, heights,
+        id, x1: left, y: lineY, cellCount,
+        heights: new Float32Array(cellCount),
         visible: new Uint8Array(cellCount).fill(1),
-        maxHeight: makeWavyLimits(cellCount, maxHeight), spillLeft: 0, spillRight: 0
+        maxHeight: makeWavyLimits(cellCount, maxHeight),
+        spillLeft: 0, spillRight: 0
       }
       this.surfaces.set(id, surface)
+      return surface
     }
 
-    surface.x1 = left
-    surface.y = lineY
+    // 1. Glide toward the real position instead of jumping
+    const previousX = surface.x1
+    const previousY = surface.y
+    const follow = Math.min(1, deltaTime * 20) // about 1/3 of the remaining distance per frame
+    surface.x1 += (left - surface.x1) * follow
+    surface.y += (lineY - surface.y) * follow
+    if (Math.abs(left - surface.x1) < 0.3) surface.x1 = left // close enough: snap
+    if (Math.abs(lineY - surface.y) < 0.3) surface.y = lineY
+
+    // 2. Moving fast? Shake some snow off
+    const safeTime = Math.max(deltaTime, 0.001) // avoid dividing by zero
+    const velocityX = (surface.x1 - previousX) / safeTime
+    const velocityY = (surface.y - previousY) / safeTime
+    const speed = Math.hypot(velocityX, velocityY)
+    if (speed > 1400) {
+      this.shedFraction(surface, Math.min(0.5, deltaTime * 7), velocityX, velocityY, 2.5) // very fast: lots
+    } else if (speed > 650) {
+      this.shedFraction(surface, deltaTime * 1.5, velocityX, velocityY, 2) // fast: a little
+    }
+
+    // 3. Resized? Keep what fits, drop the rest
+    if (cellCount !== surface.cellCount) {
+      for (let cell = cellCount; cell < surface.cellCount; cell++) {
+        if (surface.heights[cell] > 0) this.emitSnow(surface, cell, surface.heights[cell], 0, 0, 2.5)
+      }
+      const heights = new Float32Array(cellCount)
+      heights.set(surface.heights.subarray(0, Math.min(cellCount, surface.cellCount)))
+      surface.heights = heights
+      surface.visible = new Uint8Array(cellCount).fill(1)
+      surface.maxHeight = makeWavyLimits(cellCount, maxHeight)
+      surface.cellCount = cellCount
+    }
+
+    return surface
   }
 
   // Start with a little wavy snow so it doesn't look empty on launch
@@ -241,6 +286,7 @@ export class SnowWorld {
     for (const surface of this.surfaces.values()) {
       const base = surface.id === 'bar' ? 13 : 4
       for (let cell = 0; cell < surface.cellCount; cell++) {
+        if (!surface.visible[cell]) continue
         surface.heights[cell] =
           base + Math.sin(cell * 0.11) * base * 0.25 + Math.sin(cell * 0.37 + 2) * base * 0.12
       }
@@ -453,6 +499,22 @@ export class SnowWorld {
       if (amount <= 0.2) continue // too little to bother
       this.emitSnow(surface, cell, amount, velocityX, velocityY, chunkSize)
       surface.heights[cell] -= amount
+    }
+  }
+
+    // Switch off strips that another window covers, dropping their snow
+  private applyCovering(surface: Surface, coveredRanges: [number, number][]): void {
+    surface.visible.fill(1)
+    for (const [rangeStart, rangeEnd] of coveredRanges) {
+      const firstCell = Math.max(0, Math.floor((rangeStart - surface.x1) / CELL))
+      const lastCell = Math.min(surface.cellCount - 1, Math.floor((rangeEnd - surface.x1) / CELL))
+      for (let cell = firstCell; cell <= lastCell; cell++) {
+        surface.visible[cell] = 0
+        if (surface.heights[cell] > 0) {
+          this.emitSnow(surface, cell, surface.heights[cell], 0, 0, 2.5)
+          surface.heights[cell] = 0
+        }
+      }
     }
   }
 
