@@ -53,6 +53,9 @@ interface Ball {
   restingOn: string | null     // a surface id, 'floor', or null when in the air
   thrown: boolean
   specks: Speck[]              // little texture dots, so you can see it roll
+  restingOnBall: Ball | null // the ball this one sits on, if any
+  carryX: number             // how far a moving window carried it this frame
+  carryY: number
 }
 
 interface PointerSample {
@@ -170,7 +173,13 @@ export class SnowWorld {
 
   private step(deltaTime: number): void {
     this.time += deltaTime
+
+     for (const ball of this.balls) {
+      ball.carryX = 0
+      ball.carryY = 0
+    }
     this.applyScene(deltaTime)
+    this.carryStacks()
     this.updateFlakes(deltaTime)
     this.updateParticles(deltaTime)
 
@@ -324,6 +333,8 @@ export class SnowWorld {
       } else {
         ball.x += movedX
         ball.y += movedY
+        ball.carryX += movedX
+        ball.carryY += movedY
       }
     }
 
@@ -588,7 +599,27 @@ export class SnowWorld {
 
     for (const surface of this.surfaces.values()) this.drawSurface(surface)
 
-    for (const ball of this.balls) this.drawBall(ball)
+    const supporters = new Set<Ball>() // balls that have another ball on top
+    for (const ball of this.balls) {
+      if (ball.restingOnBall) supporters.add(ball.restingOnBall)
+    }
+    const heads = new Set<Ball>()
+    const bodies = new Set<Ball>()
+    for (const ball of this.balls) {
+      const isTopOfStack = ball.restingOnBall && !supporters.has(ball)
+      if (isTopOfStack) {
+        heads.add(ball)
+        bodies.add(ball.restingOnBall!)
+      }
+    }
+
+    for (const body of bodies) this.drawArms(body) // arms first, so they appear behind the ball
+    for (const ball of this.balls) {
+      this.drawBall(ball)
+      if (heads.has(ball)) this.drawFace(ball)
+      if (bodies.has(ball)) this.drawButtons(ball)
+    }
+  
     this.drawSnowDots(this.flakes)
     this.drawSnowDots(this.particles)
   }
@@ -720,7 +751,7 @@ export class SnowWorld {
     }
     return {
       x, y, previousX: x, previousY: y, velocityX: 0, velocityY: 0,
-      radius, rollAngle: 0, restingOn: null, thrown: false, specks
+      radius, rollAngle: 0, restingOn: null, thrown: false, specks, restingOnBall: null, carryX: 0, carryY: 0,
     }
   }
 
@@ -742,15 +773,19 @@ export class SnowWorld {
       ball.x += ball.velocityX * stepTime
       ball.y += ball.velocityY * stepTime
       ball.restingOn = null
+      ball.restingOnBall = null
 
       this.collideWithSurfaces(ball, stepTime)
       this.collideWithScreenEdges(ball, stepTime)
     }
 
+    this.solveBallContacts()
+
     // A thrown ball that has settled down is just a normal ball again
     for (const ball of this.balls) {
       const slow = Math.hypot(ball.velocityX, ball.velocityY) < 250
       if (ball.thrown && slow && ball.restingOn) ball.thrown = false
+      if (ball.thrown && slow && (ball.restingOn || ball.restingOnBall)) ball.thrown = false
     }
   }
 
@@ -864,5 +899,145 @@ export class SnowWorld {
       context.arc(speckX, speckY, Math.max(0.8, speck.size * radius), 0, Math.PI * 2)
       context.fill()
     }
+  }
+
+    // Balls sitting on other balls move along with whatever is under them
+  private carryStacks(): void {
+    const bottomFirst = [...this.balls].sort((first, second) => second.y - first.y)
+    for (const ball of bottomFirst) {
+      const support = ball.restingOnBall
+      if (!support || ball === this.heldBall) continue
+      ball.x += support.carryX
+      ball.y += support.carryY
+      ball.carryX += support.carryX // pass it on to the ball above this one
+      ball.carryY += support.carryY
+    }
+  }
+
+    private solveBallContacts(): void {
+    const bottomFirst = [...this.balls].sort((first, second) => second.y - first.y)
+    for (let round = 0; round < 3; round++) { // 3 rounds, so stacks of 3+ settle properly
+      for (let lowerIndex = 0; lowerIndex < bottomFirst.length; lowerIndex++) {
+        for (let upperIndex = lowerIndex + 1; upperIndex < bottomFirst.length; upperIndex++) {
+          this.solveContact(bottomFirst[lowerIndex], bottomFirst[upperIndex])
+        }
+      }
+    }
+  }
+
+  private solveContact(first: Ball, second: Ball): void {
+    const bottom = first.y >= second.y ? first : second
+    const top = bottom === first ? second : first
+    const offsetX = top.x - bottom.x
+    const offsetY = top.y - bottom.y // negative when top is above bottom
+    const touchDistance = top.radius + bottom.radius
+    const distance = Math.hypot(offsetX, offsetY)
+    if (distance >= touchDistance || distance === 0) return // not touching
+
+    const topHeld = top === this.heldBall
+
+    // 1. Stacking: the top ball is mostly above the bottom one
+    if (-offsetY > 0.6 * touchDistance) {
+      top.y = bottom.y - Math.sqrt(touchDistance ** 2 - offsetX ** 2) // sit exactly on its surface
+      if (!topHeld) {
+        top.velocityY = Math.min(top.velocityY, bottom.velocityY)
+        top.velocityX = bottom.velocityX + (top.velocityX - bottom.velocityX) * 0.6 // sticky snow
+        top.restingOnBall = bottom
+      }
+      return
+    }
+
+    // 2. Side contact: push apart, then bounce
+    const normalX = offsetX / distance // direction from bottom to top, length 1
+    const normalY = offsetY / distance
+    const massBottom = bottom === this.heldBall ? 1e9 : bottom.radius ** 2
+    const massTop = topHeld ? 1e9 : top.radius ** 2
+    const totalMass = massBottom + massTop
+    const overlap = touchDistance - distance
+
+    bottom.x -= normalX * overlap * (massTop / totalMass) // the lighter ball moves more
+    bottom.y -= normalY * overlap * (massTop / totalMass)
+    top.x += normalX * overlap * (massBottom / totalMass)
+    top.y += normalY * overlap * (massBottom / totalMass)
+
+    const approachSpeed =
+      (top.velocityX - bottom.velocityX) * normalX + (top.velocityY - bottom.velocityY) * normalY
+    if (approachSpeed < 0) { // moving toward each other
+      const impulse = (-approachSpeed * 1.05) / (1 / massBottom + 1 / massTop)
+      bottom.velocityX -= (impulse / massBottom) * normalX
+      bottom.velocityY -= (impulse / massBottom) * normalY
+      top.velocityX += (impulse / massTop) * normalX
+      top.velocityY += (impulse / massTop) * normalY
+    }
+  }
+
+  // snowman 
+    private drawFace(ball: Ball): void {
+    const context = this.context
+    const { x, y, radius } = ball
+    context.fillStyle = '#2b2b2b' // coal
+
+    // Eyes
+    const eyeRadius = Math.max(1.2, radius * 0.09)
+    for (const side of [-1, 1]) {
+      context.beginPath()
+      context.arc(x + side * 0.3 * radius, y - 0.18 * radius, eyeRadius, 0, Math.PI * 2)
+      context.fill()
+    }
+
+    // Smile: 5 dots along the bottom of a circle
+    const smileCenterY = y - 0.05 * radius
+    for (let dot = -2; dot <= 2; dot++) {
+      const angle = Math.PI / 2 + dot * 0.32 // π/2 = straight down
+      context.beginPath()
+      context.arc(
+        x + Math.cos(angle) * 0.48 * radius,
+        smileCenterY + Math.sin(angle) * 0.48 * radius,
+        eyeRadius * 0.6, 0, Math.PI * 2
+      )
+      context.fill()
+    }
+
+    // Carrot nose
+    context.fillStyle = '#f08a24'
+    context.beginPath()
+    context.moveTo(x, y - 0.06 * radius)
+    context.lineTo(x + 0.62 * radius, y + 0.06 * radius)
+    context.lineTo(x, y + 0.12 * radius)
+    context.closePath()
+    context.fill()
+  }
+
+  private drawButtons(ball: Ball): void {
+    const context = this.context
+    context.fillStyle = '#2b2b2b'
+    for (const offset of [-0.4, 0, 0.4]) {
+      context.beginPath()
+      context.arc(ball.x, ball.y + offset * ball.radius, Math.max(1.2, ball.radius * 0.08), 0, Math.PI * 2)
+      context.fill()
+    }
+  }
+
+  private drawArms(ball: Ball): void {
+    const context = this.context
+    const { x, y, radius } = ball
+    context.strokeStyle = '#6b4a2f' // wood brown
+    context.lineWidth = Math.max(1.5, radius * 0.07)
+    context.lineCap = 'round'
+    for (const side of [-1, 1]) { // -1 = left arm, 1 = right arm
+      const startX = x + side * 0.75 * radius
+      const startY = y - 0.25 * radius
+      const endX = startX + side * 0.95 * radius
+      const endY = startY - 0.55 * radius
+      const twigX = startX + (endX - startX) * 0.65 // a small twig 65% along the arm
+      const twigY = startY + (endY - startY) * 0.65
+      context.beginPath()
+      context.moveTo(startX, startY)
+      context.lineTo(endX, endY)
+      context.moveTo(twigX, twigY)
+      context.lineTo(twigX + side * 0.12 * radius, twigY - 0.32 * radius)
+      context.stroke()
+    }
+    context.lineCap = 'butt' // reset, so other drawing isn't affected
   }
 }
