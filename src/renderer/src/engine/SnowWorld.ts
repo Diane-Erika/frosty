@@ -35,12 +35,38 @@ interface Landing {
   cell: number
 }
 
+interface Speck {
+  angle: number    // where it sits around the ball
+  distance: number // how far from the center (0 = center, 1 = edge)
+  size: number
+}
+
+interface Ball {
+  x: number
+  y: number
+  previousX: number // position before this physics step
+  previousY: number
+  velocityX: number
+  velocityY: number
+  radius: number
+  rollAngle: number            // how far it has rolled, so the specks turn
+  restingOn: string | null     // a surface id, 'floor', or null when in the air
+  thrown: boolean
+  specks: Speck[]              // little texture dots, so you can see it roll
+}
+
+interface PointerSample {
+  x: number
+  y: number
+  time: number // milliseconds
+}
+
 
 const CELL = 3 // width of one snow column, in pixels
 const GRAVITY = 1600         // pixels per second², pulling things down
 const PARTICLE_MASS = 1.4    // how much snow one loose particle carries
 const MAX_PARTICLES = 6000   // safety limit so the app never slows to a crawl
-
+const MAX_BALL_RADIUS = 72
 
 function randomBetween(min: number, max: number): number {
   return min + Math.random() * (max - min)
@@ -78,6 +104,14 @@ export class SnowWorld {
   private seeded = false
 
   private particles: Particle[] = []
+
+  private balls: Ball[] = []
+  private heldBall: Ball | null = null
+  private holdOffsetX = 0 // where on the ball you grabbed it
+  private holdOffsetY = 0
+  private pointerX = 0
+  private pointerY = 0
+  private pointerSamples: PointerSample[] = [] // recent mouse positions, for throwing
 
   constructor(canvas: HTMLCanvasElement, options: { rate?: number } = {}) {
     this.canvas = canvas
@@ -126,19 +160,24 @@ export class SnowWorld {
   clear(): void {
     this.flakes = []
     this.particles = []
+    this.balls = []
+    this.heldBall = null
     for (const surface of this.surfaces.values()) {
       surface.spillLeft = 0
       surface.spillRight = 0
     }
   }
 
-    private step(deltaTime: number): void {
+  private step(deltaTime: number): void {
     this.time += deltaTime
     this.applyScene(deltaTime)
     this.updateFlakes(deltaTime)
     this.updateParticles(deltaTime)
 
     for (const surface of this.surfaces.values()) this.relax(surface)
+    
+    this.updateBalls(deltaTime / 2) // two smaller steps are more stable than one big one
+    this.updateBalls(deltaTime / 2)
     this.draw()
   }
 
@@ -182,7 +221,7 @@ export class SnowWorld {
     }
   }
 
-      private applyScene(deltaTime: number): void {
+  private applyScene(deltaTime: number): void {
     const scene = this.scene
     if (!scene) return
     const activeIds = new Set<string>()
@@ -218,6 +257,14 @@ export class SnowWorld {
     for (const [id, surface] of this.surfaces) {
       if (activeIds.has(id)) continue
       this.shedFraction(surface, 1, 0, 0, 3)
+        
+      for (const ball of this.balls) {
+        if (ball.restingOn === id) {
+          ball.restingOn = null
+          ball.velocityY = Math.min(ball.velocityY, 0)
+        }
+      }
+
       this.surfaces.delete(id)
     }
 
@@ -263,6 +310,21 @@ export class SnowWorld {
       this.shedFraction(surface, Math.min(0.5, deltaTime * 7), velocityX, velocityY, 2.5) // very fast: lots
     } else if (speed > 650) {
       this.shedFraction(surface, deltaTime * 1.5, velocityX, velocityY, 2) // fast: a little
+    }
+
+    // Balls resting on this window move with it, unless it's moving really fast
+    const movedX = surface.x1 - previousX
+    const movedY = surface.y - previousY
+    for (const ball of this.balls) {
+      if (ball.restingOn !== id || ball === this.heldBall) continue
+      if (speed > 1500) {
+        ball.restingOn = null // knocked off
+        ball.velocityX += velocityX * 0.6
+        ball.velocityY += velocityY * 0.3 - 120
+      } else {
+        ball.x += movedX
+        ball.y += movedY
+      }
     }
 
     // 3. Resized? Keep what fits, drop the rest
@@ -526,7 +588,281 @@ export class SnowWorld {
 
     for (const surface of this.surfaces.values()) this.drawSurface(surface)
 
+    for (const ball of this.balls) this.drawBall(ball)
     this.drawSnowDots(this.flakes)
     this.drawSnowDots(this.particles)
+  }
+
+
+  // snow ball 
+
+    isHolding(): boolean {
+    return this.heldBall !== null
+  }
+
+  hitTest(x: number, y: number): boolean {
+    return this.isHolding() || this.ballAt(x, y) !== null || this.snowAt(x, y) !== null
+  }
+
+  // The ball under the mouse (checking the last-drawn, top-most ball first)
+  private ballAt(x: number, y: number): Ball | null {
+    for (let index = this.balls.length - 1; index >= 0; index--) {
+      const ball = this.balls[index]
+      if (Math.hypot(x - ball.x, y - ball.y) <= ball.radius + 4) return ball
+    }
+    return null
+  }
+
+  // Snow under the mouse that's deep enough (2 px or more) to scoop
+  private snowAt(x: number, y: number): Landing | null {
+    let best: Landing | null = null
+    let bestTop = Infinity
+    for (const surface of this.surfaces.values()) {
+      const cell = Math.floor((x - surface.x1) / CELL)
+      if (cell < 0 || cell >= surface.cellCount || !surface.visible[cell]) continue
+      const snowHeight = surface.heights[cell]
+      if (snowHeight < 2) continue
+      const top = surface.y - snowHeight
+      const insidePile = y >= top - 8 && y <= surface.y - 1 // a little forgiving above the pile
+      if (insidePile && top < bestTop) {
+        best = { surface, cell }
+        bestTop = top
+      }
+    }
+    return best
+  }
+
+    pointerDown(x: number, y: number): boolean {
+    this.pointerX = x
+    this.pointerY = y
+    this.pointerSamples = [{ x, y, time: performance.now() }]
+
+    const ball = this.ballAt(x, y)
+    if (ball) {
+      this.holdBall(ball, ball.x - x, ball.y - y)
+      return true
+    }
+
+    const spot = this.snowAt(x, y)
+    if (spot) {
+      const newBall = this.scoopBall(spot, x)
+      this.holdBall(newBall, 0, newBall.y - y)
+      return true
+    }
+    return false
+  }
+
+  pointerMove(x: number, y: number): void {
+    this.pointerX = x
+    this.pointerY = y
+    this.pointerSamples.push({ x, y, time: performance.now() })
+    if (this.pointerSamples.length > 10) this.pointerSamples.shift() // keep only the last 10
+  }
+
+  pointerUp(): void {
+    const ball = this.heldBall
+    if (!ball) return
+    this.heldBall = null
+
+    // Throw speed = how far the mouse moved in its last ~80 ms
+    let velocityX = 0
+    let velocityY = 0
+    const latest = this.pointerSamples[this.pointerSamples.length - 1]
+    const stillMoving = latest && performance.now() - latest.time <= 120
+    if (stillMoving) {
+      const oldest = this.pointerSamples.find((sample) => latest.time - sample.time <= 80) ?? latest
+      const seconds = Math.max(0.016, (latest.time - oldest.time) / 1000)
+      velocityX = (latest.x - oldest.x) / seconds
+      velocityY = (latest.y - oldest.y) / seconds
+    }
+
+    const speed = Math.hypot(velocityX, velocityY)
+    if (speed > 2600) { // cap it so balls can't fly impossibly fast
+      velocityX *= 2600 / speed
+      velocityY *= 2600 / speed
+    }
+    ball.velocityX = velocityX
+    ball.velocityY = velocityY
+    ball.thrown = Math.min(speed, 2600) > 450
+  }
+
+  private holdBall(ball: Ball, offsetX: number, offsetY: number): void {
+    this.heldBall = ball
+    this.holdOffsetX = offsetX
+    this.holdOffsetY = offsetY
+    ball.thrown = false
+  }
+
+  private scoopBall(spot: Landing, x: number): Ball {
+    const { surface, cell } = spot
+    let taken = 0
+    for (let near = cell - 4; near <= cell + 4; near++) {
+      if (near < 0 || near >= surface.cellCount || !surface.visible[near]) continue
+      const take = Math.min(surface.heights[near], 5 - Math.abs(near - cell) * 0.6) // most from the middle
+      surface.heights[near] -= take
+      taken += take
+    }
+    const radius = Math.max(4, Math.sqrt((taken * CELL) / Math.PI))
+    const ballY = surface.y - surface.heights[cell] * 0.75 - radius
+    const ball = this.createBall(x, ballY, radius)
+    this.balls.push(ball)
+    return ball
+  }
+
+  private createBall(x: number, y: number, radius: number): Ball {
+    const specks: Speck[] = []
+    for (let index = 0; index < 7; index++) {
+      specks.push({
+        angle: randomBetween(0, Math.PI * 2),
+        distance: randomBetween(0.25, 0.85),
+        size: randomBetween(0.04, 0.08)
+      })
+    }
+    return {
+      x, y, previousX: x, previousY: y, velocityX: 0, velocityY: 0,
+      radius, rollAngle: 0, restingOn: null, thrown: false, specks
+    }
+  }
+
+    private updateBalls(stepTime: number): void {
+    for (const ball of this.balls) {
+      ball.previousX = ball.x
+      ball.previousY = ball.y
+
+      if (ball === this.heldBall) {
+        // Follow the mouse like a stiff spring. This velocity becomes the throw.
+        const pull = Math.min(1, stepTime * 30)
+        ball.velocityX = ((this.pointerX + this.holdOffsetX - ball.x) * pull) / stepTime
+        ball.velocityY = ((this.pointerY + this.holdOffsetY - ball.y) * pull) / stepTime
+      } else {
+        ball.velocityY += GRAVITY * stepTime
+        ball.velocityX *= 1 - stepTime * 0.15 // a little air drag
+      }
+
+      ball.x += ball.velocityX * stepTime
+      ball.y += ball.velocityY * stepTime
+      ball.restingOn = null
+
+      this.collideWithSurfaces(ball, stepTime)
+      this.collideWithScreenEdges(ball, stepTime)
+    }
+
+    // A thrown ball that has settled down is just a normal ball again
+    for (const ball of this.balls) {
+      const slow = Math.hypot(ball.velocityX, ball.velocityY) < 250
+      if (ball.thrown && slow && ball.restingOn) ball.thrown = false
+    }
+  }
+
+  private collideWithSurfaces(ball: Ball, stepTime: number): void {
+    const isHeld = ball === this.heldBall
+    for (const surface of this.surfaces.values()) {
+      const cell = Math.floor((ball.x - surface.x1) / CELL)
+      if (cell < 0 || cell >= surface.cellCount || !surface.visible[cell]) continue
+
+      // The deepest snow under the ball's "footprint"
+      const reach = Math.ceil((ball.radius * 0.5) / CELL)
+      let deepest = 0
+      for (let near = cell - reach; near <= cell + reach; near++) {
+        if (near >= 0 && near < surface.cellCount && surface.visible[near]) {
+          deepest = Math.max(deepest, surface.heights[near])
+        }
+      }
+      const top = surface.y - deepest * 0.75 // the ball sinks 25% into soft snow
+
+      // Only collide if the ball came from above (you can move balls up through windows)
+      const cameFromAbove = ball.previousY + ball.radius <= top + 10
+      const touching = ball.y + ball.radius > top
+      if (!cameFromAbove || !touching) continue
+
+      const impact = ball.velocityY
+      ball.y = top - ball.radius
+      if (isHeld) {
+        ball.velocityY = Math.min(ball.velocityY, 0) // ride on the snow, don't push through
+      } else {
+        ball.velocityY = impact > 150 ? -impact * 0.15 : 0 // small bounce, or settle
+        ball.velocityX *= Math.max(0, 1 - stepTime * 4)    // rolling friction
+        // Step 12: a hard enough thrown impact will burst the ball here
+      }
+      ball.restingOn = surface.id
+
+      // Rolling picks up snow
+      const movedX = ball.x - ball.previousX
+      if (Math.abs(movedX) > 0.3) this.collectSnow(ball, surface, cell, movedX)
+      ball.rollAngle += movedX / ball.radius
+    }
+  }
+
+  private collectSnow(ball: Ball, surface: Surface, cell: number, movedX: number): void {
+    const span = Math.max(1, Math.floor((ball.radius * 0.7) / CELL))
+    let taken = 0
+    for (let near = cell - span; near <= cell + span; near++) {
+      if (near < 0 || near >= surface.cellCount || !surface.visible[near]) continue
+      const take = Math.min(surface.heights[near], Math.abs(movedX) * 0.32)
+      surface.heights[near] -= take
+      taken += take
+    }
+    const newArea = ball.radius ** 2 + (taken * CELL) / Math.PI
+    ball.radius = Math.min(MAX_BALL_RADIUS, Math.sqrt(newArea))
+  }
+
+  private collideWithScreenEdges(ball: Ball, stepTime: number): void {
+    const isHeld = ball === this.heldBall
+
+    // Bottom of the screen
+    if (ball.y + ball.radius > this.height) {
+      const impact = ball.velocityY
+      ball.y = this.height - ball.radius
+      if (isHeld) {
+        ball.velocityY = Math.min(ball.velocityY, 0)
+      } else {
+        ball.velocityY = impact > 150 ? -impact * 0.15 : 0
+        ball.velocityX *= Math.max(0, 1 - stepTime * 4)
+      }
+      ball.restingOn = 'floor'
+      ball.rollAngle += (ball.x - ball.previousX) / ball.radius
+    }
+
+    // Left and right sides: bounce back softly
+    if (ball.x - ball.radius < 0) {
+      ball.x = ball.radius
+      if (ball.velocityX < 0) ball.velocityX = -ball.velocityX * 0.3
+    }
+    if (ball.x + ball.radius > this.width) {
+      ball.x = this.width - ball.radius
+      if (ball.velocityX > 0) ball.velocityX = -ball.velocityX * 0.3
+    }
+  }
+
+  private drawBall(ball: Ball): void {
+    const context = this.context
+    const { x, y, radius } = ball
+
+    // Shading: brightest at the top-left, as if lit from there
+    const gradient = context.createRadialGradient(
+      x - radius * 0.35, y - radius * 0.4, radius * 0.1,
+      x, y, radius
+    )
+    gradient.addColorStop(0, '#ffffff')
+    gradient.addColorStop(0.7, '#f1f5fb')
+    gradient.addColorStop(1, '#d4dfee')
+    context.fillStyle = gradient
+    context.beginPath()
+    context.arc(x, y, radius, 0, Math.PI * 2)
+    context.fill()
+    context.strokeStyle = 'rgba(130,150,185,.5)'
+    context.lineWidth = 1
+    context.stroke()
+
+    // Specks turn with the ball so you can see it roll
+    context.fillStyle = 'rgba(150,170,200,.35)'
+    for (const speck of ball.specks) {
+      const angle = speck.angle + ball.rollAngle
+      const speckX = x + Math.cos(angle) * speck.distance * radius
+      const speckY = y + Math.sin(angle) * speck.distance * radius
+      context.beginPath()
+      context.arc(speckX, speckY, Math.max(0.8, speck.size * radius), 0, Math.PI * 2)
+      context.fill()
+    }
   }
 }
