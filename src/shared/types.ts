@@ -15,10 +15,11 @@ export interface Bar {
 export interface Scene {
   bar?: Bar
   windows: WindowRect[]
+  active?: WindowRect // the window you're using right now
 }
 
 export type SnowCommand =
-  { type: 'snowing'; value: boolean } | { type: 'rate'; value: number } | { type: 'clear' }
+  { type: 'snowing'; value: boolean } | { type: 'rate'; value: number } | { type: 'clear' } | { type: 'focus'; value: boolean }
 
 export interface SnowAPI {
   onScene(callback: (scene: Scene) => void): () => void // returns an unsubscribe

@@ -102,6 +102,7 @@ function makeWavyLimits(cellCount: number, maxHeight: number): Float32Array {
 export class SnowWorld {
   snowing = true
   rate = 1
+  focusMode = false
 
   private canvas: HTMLCanvasElement
   private context: CanvasRenderingContext2D
@@ -172,6 +173,7 @@ export class SnowWorld {
     if (command.type === 'snowing') this.snowing = command.value
     else if (command.type === 'rate') this.rate = command.value
     else if (command.type === 'clear') this.clear()
+    else if (command.type === 'focus') this.focusMode = command.value
   }
 
   clear(): void {
@@ -184,6 +186,12 @@ export class SnowWorld {
       surface.spillLeft = 0
       surface.spillRight = 0
     }
+  }
+
+  private insideActiveWindow(x: number, y: number): boolean {
+    const active = this.scene?.active
+    if (!this.focusMode || !active) return false
+    return x >= active.x && x <= active.x + active.w && y >= active.y && y <= active.y + active.h
   }
 
   private step(deltaTime: number): void {
@@ -614,6 +622,7 @@ export class SnowWorld {
   }
 
   hitTest(x: number, y: number): boolean {
+      if (!this.isHolding() && this.insideActiveWindow(x, y)) return false
     return this.isHolding() || this.ballAt(x, y) !== null || this.snowAt(x, y) !== null
   }
 
@@ -1162,5 +1171,9 @@ export class SnowWorld {
     this.drawSnowDots(this.flakes)
     this.drawSnowDots(this.particles)
     this.drawDust()
+
+        // Focus mode: erase everything drawn over the active window
+    const active = this.scene?.active
+    if (this.focusMode && active) context.clearRect(active.x, active.y, active.w, active.h)
   }
 }
