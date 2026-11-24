@@ -427,6 +427,35 @@ export class SnowWorld {
     context.fill()
   }
 
+  // window snow fall 
+    // Turn `amount` of snow from one strip into falling particles
+  private emitSnow(surface: Surface, cell: number, amount: number,
+                   velocityX: number, velocityY: number, chunkSize = PARTICLE_MASS): void {
+    const count = Math.max(1, Math.round(amount / chunkSize))
+    const massEach = amount / count
+    const cellCenterX = surface.x1 + (cell + 0.5) * CELL
+    for (let piece = 0; piece < count; piece++) {
+      this.addParticle(
+        cellCenterX + randomBetween(-1.2, 1.2),
+        surface.y - surface.heights[cell] * Math.random() - 1, // somewhere inside the pile
+        velocityX * 0.5 + randomBetween(-30, 30),              // half the window's speed, plus scatter
+        velocityY * 0.5 + randomBetween(-50, 10),              // a little upward pop
+        massEach
+      )
+    }
+  }
+
+  // Shake off a fraction (0 to 1) of every strip's snow
+  private shedFraction(surface: Surface, fraction: number,
+                       velocityX: number, velocityY: number, chunkSize: number): void {
+    for (let cell = 0; cell < surface.cellCount; cell++) {
+      const amount = surface.heights[cell] * fraction
+      if (amount <= 0.2) continue // too little to bother
+      this.emitSnow(surface, cell, amount, velocityX, velocityY, chunkSize)
+      surface.heights[cell] -= amount
+    }
+  }
+
 
   private draw(): void {
     const context = this.context
