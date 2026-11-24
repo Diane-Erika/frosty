@@ -173,6 +173,7 @@ export class SnowWorld {
     if (command.type === 'snowing') this.snowing = command.value
     else if (command.type === 'rate') this.rate = command.value
     else if (command.type === 'clear') this.clear()
+    else if (command.type === 'refill') this.refill()
     else if (command.type === 'focus') this.focusMode = command.value
   }
 
@@ -185,6 +186,14 @@ export class SnowWorld {
     for (const surface of this.surfaces.values()) {
       surface.spillLeft = 0
       surface.spillRight = 0
+    }
+  }
+
+  refill(): void {
+    for (const surface of this.surfaces.values()) {
+      for (let cell = 0; cell < surface.cellCount; cell++) {
+        if (surface.visible[cell]) surface.heights[cell] = surface.maxHeight[cell]
+      }
     }
   }
 

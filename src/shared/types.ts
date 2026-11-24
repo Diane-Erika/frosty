@@ -19,7 +19,7 @@ export interface Scene {
 }
 
 export type SnowCommand =
-  { type: 'snowing'; value: boolean } | { type: 'rate'; value: number } | { type: 'clear' } | { type: 'focus'; value: boolean }
+  { type: 'snowing'; value: boolean } | { type: 'rate'; value: number } | { type: 'clear' } | { type: 'focus'; value: boolean } | { type: 'refill' }
 
 export interface SnowAPI {
   onScene(callback: (scene: Scene) => void): () => void // returns an unsubscribe

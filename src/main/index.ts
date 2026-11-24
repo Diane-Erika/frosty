@@ -70,6 +70,7 @@ function createTray(): void {
       { label: 'Normal', type: 'radio', checked: true, click: () => sendCommand({ type: 'rate', value: 1 }) },
       { label: 'Blizzard', type: 'radio', click: () => sendCommand({ type: 'rate', value: 3 }) },
       { type: 'separator' },
+      { label: 'Refill snow', click: () => sendCommand({ type: 'refill' }) },
       { label: 'Clear all snow', click: () => sendCommand({ type: 'clear' }) },
       { label: 'Quit', click: () => app.quit() }
     ])
