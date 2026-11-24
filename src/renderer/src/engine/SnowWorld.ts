@@ -752,6 +752,7 @@ export class SnowWorld {
     return {
       x, y, previousX: x, previousY: y, velocityX: 0, velocityY: 0,
       radius, rollAngle: 0, restingOn: null, thrown: false, specks, restingOnBall: null, carryX: 0, carryY: 0,
+      dead: false
     }
   }
 
