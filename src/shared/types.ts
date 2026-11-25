@@ -20,9 +20,12 @@ export interface Scene {
 
 export type SnowCommand =
   { type: 'snowing'; value: boolean } | { type: 'rate'; value: number } | { type: 'clear' } | { type: 'focus'; value: boolean } | { type: 'refill' }
+  | { type: 'opacity'; value: number } // 0 = invisible, 1 = fully visible
 
 export interface SnowAPI {
   onScene(callback: (scene: Scene) => void): () => void // returns an unsubscribe
   onCmd(callback: (command: SnowCommand) => void): () => void
   setIgnore(ignore: boolean): void
+  sendCmd(command: SnowCommand): void // settings window → main → snow window
+  quit(): void
 }

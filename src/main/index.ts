@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, screen, Tray } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeImage, screen, Tray } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import type { Scene, SnowCommand, WindowRect } from '../shared/types'
@@ -44,42 +44,79 @@ function createTrayIcon(): Electron.NativeImage {
 
 let tray: Tray | null = null // keep it in a variable, or it gets cleaned up and disappears
 
+
 function sendCommand(command: SnowCommand): void {
   overlay?.webContents.send('cmd', command)
 }
 
-function createTray(): void {
-  tray = new Tray(createTrayIcon())
-  tray.setToolTip('Desktop Snow')
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      {
-        label: 'Snowing',
-        type: 'checkbox',
-        checked: true,
-        click: (item) => sendCommand({ type: 'snowing', value: item.checked })
-      },
-      {
-        label: 'Focus mode',
-        type: 'checkbox',
-        checked: false,
-        click: (item) => sendCommand({ type: 'focus', value: item.checked })
-      },
-      { type: 'separator' },
-      { label: 'Light', type: 'radio', click: () => sendCommand({ type: 'rate', value: 0.4 }) },
-      { label: 'Normal', type: 'radio', checked: true, click: () => sendCommand({ type: 'rate', value: 1 }) },
-      { label: 'Blizzard', type: 'radio', click: () => sendCommand({ type: 'rate', value: 3 }) },
-      { type: 'separator' },
-      { label: 'Refill snow', click: () => sendCommand({ type: 'refill' }) },
-      { label: 'Clear all snow', click: () => sendCommand({ type: 'clear' }) },
-      { label: 'Quit', click: () => app.quit() }
-    ])
-  )
-  tray.on('click', () => tray?.popUpContextMenu())
+let panel: BrowserWindow | null = null
+let panelHiddenAt = 0
+
+function createPanel(): void {
+  panel = new BrowserWindow({
+    width: 260,
+    height: 310,
+    show: false,        // hidden until you click the tray icon
+    frame: false,       // no title bar, so it looks like a menu
+    transparent: true,  // invisible window, so the panel's rounded corners show
+    backgroundColor: '#00000000',
+    hasShadow: false,
+    resizable: false,
+    movable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+  panel.setAlwaysOnTop(true, 'screen-saver', 1) // one level above the snow
+
+  // Click anywhere else → hide, like a normal menu
+  panel.on('blur', () => {
+    panel?.hide()
+    panelHiddenAt = Date.now()
+  })
+
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    panel.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/settings.html`)
+  } else {
+    panel.loadFile(join(__dirname, '../renderer/settings.html'))
+  }
+}
+
+function togglePanel(): void {
+  if (!panel || !tray) return
+  if (panel.isVisible()) return panel.hide()
+  if (Date.now() - panelHiddenAt < 250) return // this click is what just closed it
+
+  const trayBounds = tray.getBounds()
+  const panelBounds = panel.getBounds()
+  const workArea = screen.getDisplayNearestPoint({ x: trayBounds.x, y: trayBounds.y }).workArea
+
+  // Centered on the icon: below it if the tray is at the top (Mac), above it if at the bottom (Windows)
+  let x = Math.round(trayBounds.x + trayBounds.width / 2 - panelBounds.width / 2)
+  let y = trayBounds.y < workArea.y + workArea.height / 2
+    ? trayBounds.y + trayBounds.height
+    : trayBounds.y - panelBounds.height
+  // Keep it fully on screen
+  x = Math.min(Math.max(x, workArea.x), workArea.x + workArea.width - panelBounds.width)
+  y = Math.min(Math.max(y, workArea.y), workArea.y + workArea.height - panelBounds.height)
+
+  panel.setPosition(x, y)
+  panel.show()
+  panel.focus()
 }
 
 
-
+function createTray(): void {
+  tray = new Tray(createTrayIcon())
+  tray.setToolTip('Desktop Snow')
+ 
+  tray.on('click', togglePanel)
+  tray.on('right-click', togglePanel)
+}
 
 const SKIP_OWNERS = new Set([
   'Dock',
@@ -266,6 +303,7 @@ app.whenReady().then(() => {
 
   createWindow()
   createTray()
+  createPanel()
   app.dock?.hide() // macOS only: no Dock icon for a background app
 
   app.on('activate', function () {
@@ -277,6 +315,10 @@ app.whenReady().then(() => {
   ipcMain.on('set-ignore', (_event, ignore) => {
     overlay?.setIgnoreMouseEvents(!!ignore, { forward: true })
   })
+
+  // Commands from the settings window get passed on to the snow window
+  ipcMain.on('cmd', (_event, command: SnowCommand) => sendCommand(command))
+  ipcMain.on('quit', () => app.quit())
 
   loadGetWindows().then(poll)
 })

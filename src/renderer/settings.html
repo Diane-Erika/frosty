@@ -1,0 +1,132 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Frosty</title>
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+    />
+    <style>
+      /* Colors taken from the app logo */
+      :root {
+        --blue-light: #3d9bff;
+        --blue-dark: #1158e8;
+        --snow: #ffffff;
+        --frost: rgba(255, 255, 255, 0.18); /* see-through white for controls */
+        --frost-strong: rgba(255, 255, 255, 0.3);
+      }
+
+      html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+
+      /* The window itself is invisible; this box is the visible rounded panel */
+      .panel {
+        position: relative;
+        box-sizing: border-box;
+        height: 100%;
+        padding: 14px 16px 34px;
+        border-radius: 18px;
+        background: linear-gradient(160deg, var(--blue-light), var(--blue-dark));
+        color: var(--snow);
+        font-family: 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
+        font-size: 13px;
+        user-select: none;
+        overflow: hidden;
+      }
+
+      /* Snow drift along the bottom, like the logo */
+      .drift { position: absolute; left: 0; right: 0; bottom: 0; width: 100%; height: 26px; }
+
+      header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+      header svg { width: 16px; height: 16px; } /* same size as the tray icon */
+      header h1 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: 0.3px; }
+
+      .section-title { margin: 12px 0 6px; font-size: 11px; font-weight: 600; opacity: 0.8;
+                       text-transform: uppercase; letter-spacing: 0.6px; display: flex; justify-content: space-between; }
+
+      /* Checkboxes drawn as on/off switches */
+      .switch-row { display: flex; justify-content: space-between; align-items: center; margin: 6px 0; cursor: pointer; }
+      .switch-row input {
+        appearance: none; margin: 0; cursor: pointer;
+        width: 34px; height: 20px; border-radius: 10px;
+        background: var(--frost-strong); position: relative; transition: background 0.15s;
+      }
+      .switch-row input::before { /* the round knob */
+        content: ''; position: absolute; top: 2px; left: 2px;
+        width: 16px; height: 16px; border-radius: 50%; background: var(--snow);
+        transition: transform 0.15s;
+      }
+      .switch-row input:checked { background: rgba(255, 255, 255, 0.55); }
+      .switch-row input:checked::before { transform: translateX(14px); background: var(--blue-dark);
+                                          box-shadow: inset 0 0 0 4px var(--snow); }
+
+      /* Radio buttons drawn as one pill with three choices */
+      .segments { display: flex; padding: 3px; border-radius: 12px; background: var(--frost); }
+      .segments label { flex: 1; text-align: center; padding: 5px 0; border-radius: 9px; cursor: pointer; }
+      .segments input { display: none; } /* hide the round dot, the label is the button */
+      .segments label:has(input:checked) { background: var(--snow); color: var(--blue-dark); font-weight: 600; }
+
+      /* Slider: see-through track, white knob */
+      input[type='range'] { appearance: none; width: 100%; height: 6px; margin: 6px 0;
+                            border-radius: 3px; background: var(--frost-strong); cursor: pointer; }
+      input[type='range']::-webkit-slider-thumb {
+        appearance: none; width: 16px; height: 16px; border-radius: 50%;
+        background: var(--snow); box-shadow: 0 1px 4px rgba(0, 40, 120, 0.35);
+      }
+
+      .buttons { display: flex; gap: 8px; margin-top: 14px; }
+      button {
+        flex: 1; padding: 7px 0; border: none; border-radius: 10px; cursor: pointer;
+        background: var(--frost); color: var(--snow); font: inherit; font-weight: 600;
+      }
+      button:hover { background: var(--frost-strong); }
+      #quit { position: absolute; top: 14px; right: 14px; flex: none; padding: 3px 10px;
+              font-size: 11px; font-weight: 500; }
+    </style>
+  </head>
+  <body>
+    <div class="panel">
+      <header>
+        <!-- Same 16×16 pixel snowflake as the tray icon (createTrayIcon in main/index.ts) -->
+        <svg viewBox="0 0 16 16" fill="white" shape-rendering="crispEdges">
+          <!-- straight arms -->
+          <path d="M2 8h13v1H2z M8 2h1v13H8z" />
+          <!-- diagonal arms -->
+          <path d="M5 5h1v1H5z M6 6h1v1H6z M7 7h1v1H7z M9 9h1v1H9z M10 10h1v1h-1z M11 11h1v1h-1z
+                   M5 11h1v1H5z M6 10h1v1H6z M7 9h1v1H7z M9 7h1v1H9z M10 6h1v1h-1z M11 5h1v1h-1z" />
+          <!-- a small "+" at the end of each arm -->
+          <path d="M7 2h3v1H7z M8 1h1v3H8z  M7 14h3v1H7z M8 13h1v3H8z
+                   M1 8h3v1H1z M2 7h1v3H2z  M13 8h3v1h-3z M14 7h1v3h-1z
+                   M3 4h3v1H3z M4 3h1v3H4z  M11 12h3v1h-3z M12 11h1v3h-1z
+                   M3 12h3v1H3z M4 11h1v3H4z  M11 4h3v1h-3z M12 3h1v3h-1z" />
+        </svg>
+        <h1>Frosty</h1>
+      </header>
+      <button id="quit">Quit</button>
+
+      <label class="switch-row">Snowing <input id="snowing" type="checkbox" checked /></label>
+      <label class="switch-row">Focus mode <input id="focus" type="checkbox" /></label>
+
+      <div class="section-title">Heaviness</div>
+      <div class="segments">
+        <label><input type="radio" name="rate" value="0.4" />Light</label>
+        <label><input type="radio" name="rate" value="1" checked />Normal</label>
+        <label><input type="radio" name="rate" value="3" />Blizzard</label>
+      </div>
+
+      <div class="section-title">Opacity <span id="opacity-value">100%</span></div>
+      <input id="opacity" type="range" min="0" max="100" value="100" />
+
+      <div class="buttons">
+        <button id="refill">Refill snow</button>
+        <button id="clear">Clear snow</button>
+      </div>
+
+      <svg class="drift" viewBox="0 0 240 26" preserveAspectRatio="none">
+        <path d="M0 14 Q60 0 130 12 T240 8 V26 H0Z" fill="rgba(255,255,255,0.65)" />
+        <path d="M0 20 Q80 8 150 18 T240 16 V26 H0Z" fill="#ffffff" />
+      </svg>
+    </div>
+    <script type="module" src="./src/settings.ts"></script>
+  </body>
+</html>

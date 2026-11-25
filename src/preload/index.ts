@@ -16,6 +16,14 @@ const snowAPI: SnowAPI = {
 
   setIgnore(ignore) {
     ipcRenderer.send('set-ignore', ignore)
+  },
+
+  sendCmd(command) {
+    ipcRenderer.send('cmd', command)
+  },
+
+  quit() {
+    ipcRenderer.send('quit')
   }
 }
 

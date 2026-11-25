@@ -103,6 +103,7 @@ export class SnowWorld {
   snowing = true
   rate = 1
   focusMode = false
+  flakeOpacity = 1 // how see-through falling flakes are (0 to 1)
 
   private canvas: HTMLCanvasElement
   private context: CanvasRenderingContext2D
@@ -175,6 +176,7 @@ export class SnowWorld {
     else if (command.type === 'clear') this.clear()
     else if (command.type === 'refill') this.refill()
     else if (command.type === 'focus') this.focusMode = command.value
+    else if (command.type === 'opacity') this.flakeOpacity = command.value
   }
 
   clear(): void {
@@ -1178,7 +1180,9 @@ export class SnowWorld {
       if (bodies.has(ball)) this.drawButtons(ball)
     }
 
+    context.globalAlpha = this.flakeOpacity
     this.drawSnowDots(this.flakes)
+    context.globalAlpha = 1 // reset, so the rest is drawn normally
     this.drawSnowDots(this.particles)
     this.drawDust()
 
