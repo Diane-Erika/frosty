@@ -1,4 +1,4 @@
-# desktop-snow
+# Frosty
 
 A minimal Electron application with TypeScript
 

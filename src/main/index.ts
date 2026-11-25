@@ -255,7 +255,7 @@ app.whenReady().then(() => {
   screen.on('display-added', refit)
   screen.on('display-removed', refit)
   // Set app user model id for windows
-  electronApp.setAppUserModelId('com.electron')
+  electronApp.setAppUserModelId('com.frosty.app')
 
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.
