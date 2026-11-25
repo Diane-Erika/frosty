@@ -1,0 +1,31 @@
+# Builds the Mac app on one of GitHub's Macs.
+# Start it from the "Actions" tab on GitHub -> "Build Mac app" -> "Run workflow".
+name: Build Mac app
+
+on:
+  workflow_dispatch: # adds a "Run workflow" button, so it only runs when you ask
+
+jobs:
+  build-mac:
+    runs-on: macos-latest # a GitHub Mac (Apple Silicon)
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install packages (Mac versions)
+        run: npm ci
+
+      - name: Build the Mac app
+        run: npm run build:mac
+
+      - name: Save the installer for download
+        uses: actions/upload-artifact@v4
+        with:
+          name: frosty-mac
+          path: dist/*.dmg
