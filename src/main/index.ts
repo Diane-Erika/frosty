@@ -1,4 +1,6 @@
-import { app, BrowserWindow, ipcMain, nativeImage, screen, Tray } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, screen, Tray } from 'electron'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import type { Scene, SnowCommand, WindowRect } from '../shared/types'
@@ -90,6 +92,14 @@ function togglePanel(): void {
   if (!panel || !tray) return
   if (panel.isVisible()) return panel.hide()
   if (Date.now() - panelHiddenAt < 250) return // this click is what just closed it
+  if (process.platform == 'linux') {
+    const { workArea } = screen.getPrimaryDisplay()
+    const { width } = panel.getBounds()
+    panel.setPosition(workArea.x + workArea.width - width, workArea.y)
+    panel.show()
+    panel.focus()
+    return
+  }
 
   const trayBounds = tray.getBounds()
   const panelBounds = panel.getBounds()
@@ -114,6 +124,16 @@ function createTray(): void {
   tray = new Tray(createTrayIcon())
   tray.setToolTip('Desktop Snow')
  
+  if(process.platform === 'linux') {
+    tray.setContextMenu(
+      Menu.buildFromTemplate([
+        { label: 'settings', click: togglePanel },
+        { label: 'Quit', click: () => app.quit() }
+      ])
+    )
+    return
+
+  }
   tray.on('click', togglePanel)
   tray.on('right-click', togglePanel)
 }
@@ -148,6 +168,29 @@ async function loadGetWindows(): Promise<void> {
     console.warn('get-windows not available, taskbar snow only:', error)
   }
 }
+const run = promisify(execFile)
+
+async function fixLinuxRect(windowId: number, rect: Electron.Rectangle): Promise<Electron.Rectangle | null> {
+  try {
+    const { stdout } = await run('xprop', ['-id', String(windowId), '_NET_WM_STATE', '_NET_FRAME_EXTENTS', '_GTK_FRAME_EXTENTS'])
+    if (stdout.includes('_NET_WM_STATE_HIDDEN')) return null
+    const readExtents = (name: string): number[] => {
+      const match = stdout.match(new RegExp(`^${name}\\(CARDINAL\\) = (.+)$`, 'm'))
+      return match ? match[1].split(',').map(Number) : [0, 0, 0, 0]
+    }
+    const [left, right, top, bottom] = readExtents('_NET_FRAME_EXTENTS')
+    const [shadowLeft, shadowRight, shadowTop, shadowBottom] = readExtents('_GTK_FRAME_EXTENTS')
+
+    return {
+      x: rect.x - left + shadowLeft,
+      y: rect.y - top + shadowTop,
+      width: rect.width + left + right - shadowLeft - shadowRight,
+      height: rect.height + top + bottom - shadowTop - shadowBottom
+    }
+  } catch {
+    return null
+  }
+}
 
 async function buildScene(): Promise<Scene> {
   const display = screen.getPrimaryDisplay()
@@ -160,7 +203,8 @@ async function buildScene(): Promise<Scene> {
       accessibilityPermission: false,
       screenRecordingPermission: false
     })
-    for (const win of openWindowList) {
+    const frontToBack = process.platform === 'linux' ? [...openWindowList].reverse() : openWindowList
+    for (const win of frontToBack) {
       if (win.owner.processId === process.pid) continue // our own overlay
       if (SKIP_OWNERS.has(win.owner.name) || SKIP_TITLES.has(win.title)) continue
 
@@ -170,7 +214,12 @@ async function buildScene(): Promise<Scene> {
         width: win.bounds.width,
         height: win.bounds.height
       }
-      if (process.platform === 'win32') rect = screen.screenToDipRect(null, rect) // fix display scaling
+      if (process.platform === 'win32') rect = screen.screenToDipRect(null, rect)
+      if (process.platform === 'linux') {
+        const fixed = await fixLinuxRect(win.id, rect)
+        if (!fixed) continue
+        rect = fixed
+      }
 
       if (rect.width < 120 || rect.height < 60) continue // too small
       const coversAll =
@@ -210,6 +259,7 @@ async function buildScene(): Promise<Scene> {
         if (activeWin && !skip) {
           let rect = { x: activeWin.bounds.x, y: activeWin.bounds.y, width: activeWin.bounds.width, height: activeWin.bounds.height }
           if (process.platform === 'win32') rect = screen.screenToDipRect(null, rect)
+          if (process.platform === 'linux') rect = (await fixLinuxRect(activeWin.id, rect)) ?? rect
           active = {
             id: String(activeWin.id),
             x: rect.x - screenBounds.x,
@@ -269,6 +319,10 @@ function createWindow(): void {
   overlay.setAlwaysOnTop(true, 'screen-saver') // above everything
   overlay.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   overlay.setIgnoreMouseEvents(true, { forward: true })
+
+  if (process.platform === 'linux') {
+    setTimeout(() => overlay?.setBounds(screen.getPrimaryDisplay().bounds), 600)
+  }
 
   // Developer tools in a separate window, only while developing
   if (is.dev) overlay.webContents.openDevTools({ mode: 'detach' })
