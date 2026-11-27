@@ -266,7 +266,11 @@ function createWindow(): void {
     }
   })
 
-  overlay.setAlwaysOnTop(true, 'screen-saver') // above everything
+  // On macOS the 'screen-saver' level also sits above the Dock and the menu bar, so the
+  // snow overlay paints over them. Dropping to 'floating' keeps the overlay above normal
+  // windows while letting the Dock and menu bar stay in front, where they belong. Other
+  // platforms keep the original behaviour.
+  overlay.setAlwaysOnTop(true, process.platform === 'darwin' ? 'floating' : 'screen-saver')
   overlay.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   overlay.setIgnoreMouseEvents(true, { forward: true })
 
